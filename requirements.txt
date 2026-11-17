@@ -1,8 +1,10 @@
+--extra-index-url https://pytorch.org
 numpy
 pandas
 scikit-learn
 sktime
-darts[all]
-pytorch-lightning>=2.0.0torch
+u8darts
+pytorch-lightning
+torch
 streamlit
 plotly
