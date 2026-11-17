@@ -1,5 +1,6 @@
 import time
 import numpy as np
+import pandas as pd
 import streamlit as st
 import torch
 import plotly.graph_objects as go
@@ -25,6 +26,8 @@ if "rul_active" not in st.session_state:
     st.session_state.rul_active = False
 if "sim_seed" not in st.session_state:
     st.session_state.sim_seed = 42
+if "stream_log_df" not in st.session_state:
+    st.session_state.stream_log_df = None
 
 
 @st.cache_data
@@ -55,23 +58,31 @@ horizon = st.sidebar.slider("Darts Forecast Horizon (Cycles)", 10, 25, 15)
 
 if st.sidebar.button("🔄 Generate New Synthetic Fleet"):
     st.session_state.sim_seed = int(np.random.randint(1, 10000))
+    st.session_state.stream_log_df = None
     st.rerun()
 
 st.sidebar.markdown("---")
 stream_live = st.sidebar.toggle("🔴 Enable Live Sensor Telemetry Stream", value=False)
 stream_speed = st.sidebar.slider("Stream Refresh Rate (sec)", 0.1, 1.0, 0.3)
 
-st.sidebar.markdown("---")
-st.sidebar.markdown(
-    "**Tech Stack:**\n"
-    "- `sktime`: Rolling window feature extraction\n"
-    "- `Darts`: Exponential Smoothing vs. N-BEATS\n"
-    "- `PyTorch`: 2-Layer LSTM with Huber Loss\n"
-    "- `Plotly` & `Streamlit`: Real-time diagnostics"
-)
-
 df = load_telemetry_data(st.session_state.sim_seed)
 asset_df = df[df["machine_id"] == machine_id].sort_values("cycle").reset_index(drop=True)
+
+# Always-available sidebar CSV export for selected asset
+st.sidebar.markdown("---")
+st.sidebar.subheader("📥 Data Export")
+st.sidebar.download_button(
+    label=f"Download Asset #{machine_id} Telemetry (CSV)",
+    data=asset_df.to_csv(index=False).encode("utf-8"),
+    file_name=f"turbine_asset_{machine_id}_telemetry.csv",
+    mime="text/csv",
+)
+st.sidebar.download_button(
+    label="Download Full 15-Turbine Fleet (CSV)",
+    data=df.to_csv(index=False).encode("utf-8"),
+    file_name="industrial_turbine_fleet_telemetry.csv",
+    mime="text/csv",
+)
 
 # ---------------------------------------------------------
 # SECTION 1: LIVE TELEMETRY STREAMING SIMULATOR
@@ -88,8 +99,8 @@ if stream_live:
 
     kpi_placeholder = st.empty()
     chart_placeholder = st.empty()
+    streamed_records = []
 
-    # Stream the final 45 critical cycles so rapid degradation is visible immediately
     start_idx = max(25, len(asset_df) - 45)
     for idx in range(start_idx, len(asset_df)):
         current_slice = asset_df.iloc[: idx + 1]
@@ -98,6 +109,21 @@ if stream_live:
 
         pred_idx = min(idx - 20, len(live_rul_preds) - 1)
         est_rul = max(0.0, float(live_rul_preds[pred_idx]))
+        status_label = "CRITICAL" if est_rul < 25 else "NORMAL"
+
+        streamed_records.append(
+            {
+                "machine_id": int(latest["machine_id"]),
+                "cycle": int(latest["cycle"]),
+                "temp_c": latest["temp_c"],
+                "vibration_mms": latest["vibration_mms"],
+                "pressure_bar": latest["pressure_bar"],
+                "rpm": latest["rpm"],
+                "true_RUL": int(latest["RUL"]),
+                "pytorch_predicted_RUL": round(est_rul, 2),
+                "alert_status": status_label,
+            }
+        )
 
         with kpi_placeholder.container():
             m1, m2, m3, m4, m5 = st.columns(5)
@@ -119,7 +145,6 @@ if stream_live:
                 f"{latest['pressure_bar']:.2f} bar",
                 delta=f"{latest['pressure_bar'] - prev['pressure_bar']:+.2f}",
             )
-            status_label = "CRITICAL" if est_rul < 25 else "NORMAL"
             m5.metric(
                 f"PyTorch Est. RUL ({status_label})",
                 f"{est_rul:.1f} cycles",
@@ -131,6 +156,9 @@ if stream_live:
             st.line_chart(plot_df, height=260)
 
         time.sleep(stream_speed)
+
+    st.session_state.stream_log_df = pd.DataFrame(streamed_records)
+    st.success(f"✅ Live telemetry stream completed for Asset #{machine_id}.")
 else:
     st.info(
         "👈 Toggle **'Enable Live Sensor Telemetry Stream'** in the left sidebar to watch live sensor packets and PyTorch RUL predictions update in real time."
@@ -140,6 +168,18 @@ else:
     k2.metric("Peak Vibration", f"{asset_df['vibration_mms'].max():.2f} mm/s")
     k3.metric("Peak Core Temp", f"{asset_df['temp_c'].max():.1f} °C")
     k4.metric("Final Pressure", f"{asset_df['pressure_bar'].iloc[-1]:.2f} bar")
+
+# Show live stream log & download button once streamed
+if st.session_state.stream_log_df is not None:
+    with st.expander("📋 View & Download Live Streamed Telemetry Log", expanded=True):
+        st.dataframe(st.session_state.stream_log_df.tail(10), width="stretch")
+        st.download_button(
+            label="📥 Download Streamed Telemetry + PyTorch RUL Log (CSV)",
+            data=st.session_state.stream_log_df.to_csv(index=False).encode("utf-8"),
+            file_name=f"live_stream_rul_asset_{machine_id}.csv",
+            mime="text/csv",
+            type="primary",
+        )
 
 st.markdown("---")
 
