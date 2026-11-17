@@ -24,7 +24,8 @@ def train_rul_model(X_train, y_train, epochs: int = 25, batch_size: int = 32):
     dataset = TensorDataset(torch.tensor(X_train), torch.tensor(y_train))
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-    model = RULPredictorLSTM(input_dim=X_train.shape[2])
+    num_features = int(X_train.shape[-1])
+    model = RULPredictorLSTM(input_dim=num_features)
     criterion = nn.HuberLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
