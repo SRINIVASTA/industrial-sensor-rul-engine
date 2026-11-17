@@ -3,6 +3,7 @@ pandas
 scikit-learn
 sktime
 u8darts
+pytorch-lightning
 torch
 streamlit
 plotly
