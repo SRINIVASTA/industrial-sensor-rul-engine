@@ -1,3 +1,5 @@
+import time
+import numpy as np
 import streamlit as st
 import torch
 import plotly.graph_objects as go
@@ -14,19 +16,20 @@ st.set_page_config(
 
 st.title("⚙️ Industrial Predictive Maintenance & Sensor Drift Engine")
 st.caption(
-    "End-to-End Applied ML Pipeline • PyTorch (LSTM) • Darts (N-BEATS & Exponential Smoothing) • sktime"
+    "Real-Time Telemetry Stream & Applied ML Pipeline • PyTorch (LSTM) • Darts (N-BEATS) • sktime"
 )
 
-# Initialize session state so charts stay visible across button clicks
 if "darts_active" not in st.session_state:
     st.session_state.darts_active = False
 if "rul_active" not in st.session_state:
     st.session_state.rul_active = False
+if "sim_seed" not in st.session_state:
+    st.session_state.sim_seed = 42
 
 
 @st.cache_data
-def load_telemetry_data():
-    return generate_sensor_data(n_machines=15)
+def load_telemetry_data(seed: int):
+    return generate_sensor_data(n_machines=15, seed=seed)
 
 
 @st.cache_data(max_entries=3)
@@ -36,7 +39,6 @@ def run_cached_darts(df, machine_id: int, horizon: int = 15):
 
 @st.cache_resource(max_entries=3)
 def get_trained_lstm(df, test_machine_id: int):
-    # Compute sktime rolling features on a subset to stay well within 1GB cloud RAM
     _ = extract_sktime_features(df[df["machine_id"] <= 3])
     X_train, y_train, _ = create_sequences(
         df[df["machine_id"] != test_machine_id], seq_length=20
@@ -44,76 +46,132 @@ def get_trained_lstm(df, test_machine_id: int):
     return train_rul_model(X_train, y_train, epochs=20)
 
 
-df = load_telemetry_data()
-
-# Sidebar controls
-st.sidebar.header("🎛️ Asset Controls")
+# Sidebar Controls
+st.sidebar.header("🎛️ Asset & Stream Controls")
 machine_id = st.sidebar.selectbox(
-    "Select Turbine Asset ID", sorted(df["machine_id"].unique())
+    "Select Turbine Asset ID", list(range(1, 16))
 )
 horizon = st.sidebar.slider("Darts Forecast Horizon (Cycles)", 10, 25, 15)
 
+if st.sidebar.button("🔄 Generate New Synthetic Fleet"):
+    st.session_state.sim_seed = int(np.random.randint(1, 10000))
+    st.rerun()
+
 st.sidebar.markdown("---")
-st.sidebar.markdown(
-    "**Tech Stack:**\n"
-    "- `sktime`: Rolling window feature extraction\n"
-    "- `Darts`: Exponential Smoothing vs. N-BEATS\n"
-    "- `PyTorch`: 2-Layer LSTM with Huber Loss\n"
-    "- `Plotly` & `Streamlit`: Real-time diagnostics"
-)
+stream_live = st.sidebar.toggle("🔴 Enable Live Sensor Telemetry Stream", value=False)
+stream_speed = st.sidebar.slider("Stream Refresh Rate (sec)", 0.2, 1.5, 0.5)
 
-asset_df = df[df["machine_id"] == machine_id].sort_values("cycle")
+df = load_telemetry_data(st.session_state.sim_seed)
+asset_df = df[df["machine_id"] == machine_id].sort_values("cycle").reset_index(drop=True)
 
-# Top KPI Row
-k1, k2, k3, k4 = st.columns(4)
-k1.metric("Total Operating Cycles", f"{int(asset_df['cycle'].max())} cycles")
-k2.metric("Peak Vibration", f"{asset_df['vibration_mms'].max():.2f} mm/s")
-k3.metric("Peak Core Temp", f"{asset_df['temp_c'].max():.1f} °C")
-k4.metric("Final Pressure", f"{asset_df['pressure_bar'].iloc[-1]:.2f} bar")
+# ---------------------------------------------------------
+# SECTION 1: LIVE TELEMETRY STREAMING SIMULATOR
+# ---------------------------------------------------------
+st.subheader(f"📡 Live Sensor Telemetry Feed — Turbine Asset #{machine_id}")
 
-with st.expander("📊 View Raw Multivariate Sensor Telemetry", expanded=False):
-    fig_raw = go.Figure()
-    fig_raw.add_trace(
-        go.Scatter(
-            x=asset_df["cycle"],
-            y=asset_df["temp_c"],
-            name="Core Temp (°C)",
-            line=dict(color="#EF553B"),
-        )
+if stream_live:
+    # Train LSTM once before streaming so live RUL predictions update at every step
+    with st.spinner("Initializing PyTorch LSTM inference engine for live stream..."):
+        live_model = get_trained_lstm(df, test_machine_id=machine_id)
+        X_seq, y_seq, _ = create_sequences(asset_df, seq_length=20)
+        live_model.eval()
+        with torch.no_grad():
+            live_rul_preds = live_model(torch.tensor(X_seq)).numpy()
+
+    kpi_placeholder = st.empty()
+    chart_placeholder = st.empty()
+
+    # Stream from cycle 25 up to breakdown
+    start_idx = 25
+    for idx in range(start_idx, len(asset_df)):
+        current_slice = asset_df.iloc[: idx + 1]
+        latest = current_slice.iloc[-1]
+        prev = current_slice.iloc[-2]
+
+        # Match sliding window index (idx - 20)
+        pred_idx = min(idx - 20, len(live_rul_preds) - 1)
+        est_rul = max(0.0, float(live_rul_preds[pred_idx]))
+
+        with kpi_placeholder.container():
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric(
+                "Live Cycle",
+                f"#{int(latest['cycle'])}",
+                delta="+1 cycle",
+            )
+            m2.metric(
+                "Vibration",
+                f"{latest['vibration_mms']:.2f} mm/s",
+                delta=f"{latest['vibration_mms'] - prev['vibration_mms']:+.2f}",
+                delta_color="inverse",
+            )
+            m3.metric(
+                "Core Temp",
+                f"{latest['temp_c']:.1f} °C",
+                delta=f"{latest['temp_c'] - prev['temp_c']:+.1f}",
+                delta_color="inverse",
+            )
+            m4.metric(
+                "Pressure",
+                f"{latest['pressure_bar']:.2f} bar",
+                delta=f"{latest['pressure_bar'] - prev['pressure_bar']:+.2f}",
+            )
+            status_label = "CRITICAL" if est_rul < 25 else "NORMAL"
+            m5.metric(
+                f"PyTorch Est. RUL ({status_label})",
+                f"{est_rul:.1f} cycles",
+                delta=f"True RUL: {int(latest['RUL'])}",
+            )
+
+        with chart_placeholder.container():
+            fig_live = go.Figure()
+            fig_live.add_trace(
+                go.Scatter(
+                    x=current_slice["cycle"],
+                    y=current_slice["vibration_mms"],
+                    name="Live Vibration (mm/s)",
+                    line=dict(color="#00CC96", width=2.5),
+                )
+            )
+            fig_live.add_trace(
+                go.Scatter(
+                    x=current_slice["cycle"],
+                    y=current_slice["temp_c"] / 15.0,
+                    name="Core Temp (scaled /15)",
+                    line=dict(color="#EF553B", width=2),
+                )
+            )
+            fig_live.update_layout(
+                title=f"Streaming Incoming Telemetry Packets (Cycle 1 → {int(latest['cycle'])})",
+                xaxis_title="Operating Cycle",
+                yaxis_title="Sensor Amplitude",
+                height=300,
+                margin=dict(l=20, r=20, t=40, b=20),
+            )
+            st.plotly_chart(fig_live, width="stretch", key=f"live_chart_{idx}")
+
+        time.sleep(stream_speed)
+else:
+    st.info(
+        "👈 Toggle **'Enable Live Sensor Telemetry Stream'** in the left sidebar to watch live sensor packets and PyTorch RUL predictions update in real time."
     )
-    fig_raw.add_trace(
-        go.Scatter(
-            x=asset_df["cycle"],
-            y=asset_df["vibration_mms"] * 15,
-            name="Vibration (scaled x15)",
-            line=dict(color="#00CC96"),
-        )
-    )
-    fig_raw.add_trace(
-        go.Scatter(
-            x=asset_df["cycle"],
-            y=asset_df["pressure_bar"] * 8,
-            name="Pressure (scaled x8)",
-            line=dict(color="#636EFA"),
-        )
-    )
-    fig_raw.update_layout(
-        title=f"Asset #{machine_id} Degradation Profile Across Lifecycle",
-        xaxis_title="Operating Cycle",
-        yaxis_title="Normalized Sensor Magnitude",
-        height=320,
-        margin=dict(l=20, r=20, t=40, b=20),
-    )
-    st.plotly_chart(fig_raw, width="stretch")
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Total Lifecycle", f"{int(asset_df['cycle'].max())} cycles")
+    k2.metric("Peak Vibration", f"{asset_df['vibration_mms'].max():.2f} mm/s")
+    k3.metric("Peak Core Temp", f"{asset_df['temp_c'].max():.1f} °C")
+    k4.metric("Final Pressure", f"{asset_df['pressure_bar'].iloc[-1]:.2f} bar")
 
 st.markdown("---")
 
+# ---------------------------------------------------------
+# SECTION 2: BATCH MODELING & BENCHMARKING
+# ---------------------------------------------------------
 col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("1. Darts Sensor Drift Forecast (Vibration mm/s)")
     st.write(
-        "Compares a classical statistical baseline (**Exponential Smoothing**) against a deep learning architecture (**N-BEATS**)."
+        "Compares classical **Exponential Smoothing** against deep **N-BEATS**."
     )
     if st.button("Run Darts Forecast", type="primary"):
         st.session_state.darts_active = True
@@ -151,15 +209,15 @@ with col1:
         fig.update_layout(
             xaxis_title="Forecast Horizon Step",
             yaxis_title="Vibration (mm/s)",
-            height=380,
+            height=360,
             margin=dict(l=20, r=20, t=30, b=20),
         )
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, width="stretch", key="darts_batch_chart")
 
 with col2:
     st.subheader("2. PyTorch LSTM Remaining Useful Life (RUL)")
     st.write(
-        "Extracts rolling window features via **sktime** and predicts remaining cycles before failure using a custom **PyTorch LSTM**."
+        "Extracts rolling window features via **sktime** and predicts remaining cycles using **PyTorch LSTM**."
     )
     if st.button("Train & Predict RUL", type="primary"):
         st.session_state.rul_active = True
@@ -168,9 +226,7 @@ with col2:
         with st.spinner("Extracting sktime features & running PyTorch LSTM..."):
             model = get_trained_lstm(df, test_machine_id=machine_id)
 
-        X_test, y_test, _ = create_sequences(
-            df[df["machine_id"] == machine_id], seq_length=20
-        )
+        X_test, y_test, _ = create_sequences(asset_df, seq_length=20)
         model.eval()
         with torch.no_grad():
             preds = model(torch.tensor(X_test)).numpy()
@@ -196,7 +252,7 @@ with col2:
         fig2.update_layout(
             xaxis_title="Sliding Window Sequence Index",
             yaxis_title="Remaining Useful Life (Cycles)",
-            height=380,
+            height=360,
             margin=dict(l=20, r=20, t=30, b=20),
         )
-        st.plotly_chart(fig2, width="stretch")
+        st.plotly_chart(fig2, width="stretch", key="rul_batch_chart")
