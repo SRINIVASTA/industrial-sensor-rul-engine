@@ -17,27 +17,33 @@ st.caption(
     "End-to-End Applied ML Pipeline • PyTorch (LSTM) • Darts (N-BEATS & Exponential Smoothing) • sktime"
 )
 
+# Initialize session state so charts stay visible across button clicks
+if "darts_active" not in st.session_state:
+    st.session_state.darts_active = False
+if "rul_active" not in st.session_state:
+    st.session_state.rul_active = False
+
 
 @st.cache_data
 def load_telemetry_data():
     return generate_sensor_data(n_machines=15)
 
 
-@st.cache_data
+@st.cache_data(max_entries=3)
 def run_cached_darts(df, machine_id: int, horizon: int = 15):
     return forecast_sensor_drift(df, machine_id=machine_id, horizon=horizon)
 
 
-@st.cache_resource
+@st.cache_resource(max_entries=3)
 def get_trained_lstm(df, test_machine_id: int):
-    _ = extract_sktime_features(df)
+    # Compute sktime rolling features on a subset to stay well within 1GB cloud RAM
+    _ = extract_sktime_features(df[df["machine_id"] <= 3])
     X_train, y_train, _ = create_sequences(
         df[df["machine_id"] != test_machine_id], seq_length=20
     )
     return train_rul_model(X_train, y_train, epochs=20)
 
 
-# Load simulated industrial sensor dataset
 df = load_telemetry_data()
 
 # Sidebar controls
@@ -56,7 +62,6 @@ st.sidebar.markdown(
     "- `Plotly` & `Streamlit`: Real-time diagnostics"
 )
 
-# Filter selected turbine data
 asset_df = df[df["machine_id"] == machine_id].sort_values("cycle")
 
 # Top KPI Row
@@ -66,7 +71,6 @@ k2.metric("Peak Vibration", f"{asset_df['vibration_mms'].max():.2f} mm/s")
 k3.metric("Peak Core Temp", f"{asset_df['temp_c'].max():.1f} °C")
 k4.metric("Final Pressure", f"{asset_df['pressure_bar'].iloc[-1]:.2f} bar")
 
-# Expandable Raw Multivariate Sensor Telemetry
 with st.expander("📊 View Raw Multivariate Sensor Telemetry", expanded=False):
     fig_raw = go.Figure()
     fig_raw.add_trace(
@@ -104,7 +108,6 @@ with st.expander("📊 View Raw Multivariate Sensor Telemetry", expanded=False):
 
 st.markdown("---")
 
-# Main Two-Column Modeling Workspace
 col1, col2 = st.columns(2)
 
 with col1:
@@ -113,42 +116,45 @@ with col1:
         "Compares a classical statistical baseline (**Exponential Smoothing**) against a deep learning architecture (**N-BEATS**)."
     )
     if st.button("Run Darts Forecast", type="primary"):
+        st.session_state.darts_active = True
+
+    if st.session_state.darts_active:
         with st.spinner("Training Exponential Smoothing & N-BEATS..."):
             res = run_cached_darts(df, machine_id=machine_id, horizon=horizon)
 
-            m1, m2 = st.columns(2)
-            m1.metric("ExpSmoothing MAPE", f"{res['stat_mape']}%")
-            m2.metric("Darts N-BEATS MAPE", f"{res['nbeats_mape']}%")
+        m1, m2 = st.columns(2)
+        m1.metric("ExpSmoothing MAPE", f"{res['stat_mape']}%")
+        m2.metric("Darts N-BEATS MAPE", f"{res['nbeats_mape']}%")
 
-            fig = go.Figure()
-            fig.add_trace(
-                go.Scatter(
-                    y=res["actual"],
-                    name="Actual Vibration",
-                    line=dict(color="#FFFFFF", width=2.5),
-                )
+        fig = go.Figure()
+        fig.add_trace(
+            go.Scatter(
+                y=res["actual"],
+                name="Actual Vibration",
+                line=dict(color="#FFFFFF", width=2.5),
             )
-            fig.add_trace(
-                go.Scatter(
-                    y=res["stat_forecast"],
-                    name=f"ExpSmoothing ({res['stat_mape']}% MAPE)",
-                    line=dict(color="#FFA15A", dash="dash"),
-                )
+        )
+        fig.add_trace(
+            go.Scatter(
+                y=res["stat_forecast"],
+                name=f"ExpSmoothing ({res['stat_mape']}% MAPE)",
+                line=dict(color="#FFA15A", dash="dash"),
             )
-            fig.add_trace(
-                go.Scatter(
-                    y=res["nbeats_forecast"],
-                    name=f"Darts N-BEATS ({res['nbeats_mape']}% MAPE)",
-                    line=dict(color="#00CC96", width=2.5),
-                )
+        )
+        fig.add_trace(
+            go.Scatter(
+                y=res["nbeats_forecast"],
+                name=f"Darts N-BEATS ({res['nbeats_mape']}% MAPE)",
+                line=dict(color="#00CC96", width=2.5),
             )
-            fig.update_layout(
-                xaxis_title="Forecast Horizon Step",
-                yaxis_title="Vibration (mm/s)",
-                height=380,
-                margin=dict(l=20, r=20, t=30, b=20),
-            )
-            st.plotly_chart(fig, width="stretch")
+        )
+        fig.update_layout(
+            xaxis_title="Forecast Horizon Step",
+            yaxis_title="Vibration (mm/s)",
+            height=380,
+            margin=dict(l=20, r=20, t=30, b=20),
+        )
+        st.plotly_chart(fig, width="stretch")
 
 with col2:
     st.subheader("2. PyTorch LSTM Remaining Useful Life (RUL)")
@@ -156,38 +162,41 @@ with col2:
         "Extracts rolling window features via **sktime** and predicts remaining cycles before failure using a custom **PyTorch LSTM**."
     )
     if st.button("Train & Predict RUL", type="primary"):
+        st.session_state.rul_active = True
+
+    if st.session_state.rul_active:
         with st.spinner("Extracting sktime features & running PyTorch LSTM..."):
             model = get_trained_lstm(df, test_machine_id=machine_id)
 
-            X_test, y_test, _ = create_sequences(
-                df[df["machine_id"] == machine_id], seq_length=20
-            )
-            model.eval()
-            with torch.no_grad():
-                preds = model(torch.tensor(X_test)).numpy()
+        X_test, y_test, _ = create_sequences(
+            df[df["machine_id"] == machine_id], seq_length=20
+        )
+        model.eval()
+        with torch.no_grad():
+            preds = model(torch.tensor(X_test)).numpy()
 
-            mae = float(abs(y_test - preds).mean())
-            st.metric("Test Asset Mean Absolute Error (MAE)", f"{mae:.2f} cycles")
+        mae = float(abs(y_test - preds).mean())
+        st.metric("Test Asset Mean Absolute Error (MAE)", f"{mae:.2f} cycles")
 
-            fig2 = go.Figure()
-            fig2.add_trace(
-                go.Scatter(
-                    y=y_test,
-                    name="True RUL (Cycles)",
-                    line=dict(color="#636EFA", width=2.5),
-                )
+        fig2 = go.Figure()
+        fig2.add_trace(
+            go.Scatter(
+                y=y_test,
+                name="True RUL (Cycles)",
+                line=dict(color="#636EFA", width=2.5),
             )
-            fig2.add_trace(
-                go.Scatter(
-                    y=preds,
-                    name="PyTorch Predicted RUL",
-                    line=dict(color="#EF553B", width=2.5),
-                )
+        )
+        fig2.add_trace(
+            go.Scatter(
+                y=preds,
+                name="PyTorch Predicted RUL",
+                line=dict(color="#EF553B", width=2.5),
             )
-            fig2.update_layout(
-                xaxis_title="Sliding Window Sequence Index",
-                yaxis_title="Remaining Useful Life (Cycles)",
-                height=380,
-                margin=dict(l=20, r=20, t=30, b=20),
-            )
-            st.plotly_chart(fig2, width="stretch")
+        )
+        fig2.update_layout(
+            xaxis_title="Sliding Window Sequence Index",
+            yaxis_title="Remaining Useful Life (Cycles)",
+            height=380,
+            margin=dict(l=20, r=20, t=30, b=20),
+        )
+        st.plotly_chart(fig2, width="stretch")
