@@ -59,7 +59,16 @@ if st.sidebar.button("🔄 Generate New Synthetic Fleet"):
 
 st.sidebar.markdown("---")
 stream_live = st.sidebar.toggle("🔴 Enable Live Sensor Telemetry Stream", value=False)
-stream_speed = st.sidebar.slider("Stream Refresh Rate (sec)", 0.2, 1.5, 0.5)
+stream_speed = st.sidebar.slider("Stream Refresh Rate (sec)", 0.1, 1.0, 0.3)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown(
+    "**Tech Stack:**\n"
+    "- `sktime`: Rolling window feature extraction\n"
+    "- `Darts`: Exponential Smoothing vs. N-BEATS\n"
+    "- `PyTorch`: 2-Layer LSTM with Huber Loss\n"
+    "- `Plotly` & `Streamlit`: Real-time diagnostics"
+)
 
 df = load_telemetry_data(st.session_state.sim_seed)
 asset_df = df[df["machine_id"] == machine_id].sort_values("cycle").reset_index(drop=True)
@@ -70,8 +79,7 @@ asset_df = df[df["machine_id"] == machine_id].sort_values("cycle").reset_index(d
 st.subheader(f"📡 Live Sensor Telemetry Feed — Turbine Asset #{machine_id}")
 
 if stream_live:
-    # Train LSTM once before streaming so live RUL predictions update at every step
-    with st.spinner("Initializing PyTorch LSTM inference engine for live stream..."):
+    with st.spinner("Initializing PyTorch LSTM inference engine..."):
         live_model = get_trained_lstm(df, test_machine_id=machine_id)
         X_seq, y_seq, _ = create_sequences(asset_df, seq_length=20)
         live_model.eval()
@@ -81,24 +89,19 @@ if stream_live:
     kpi_placeholder = st.empty()
     chart_placeholder = st.empty()
 
-    # Stream from cycle 25 up to breakdown
-    start_idx = 25
+    # Stream the final 45 critical cycles so rapid degradation is visible immediately
+    start_idx = max(25, len(asset_df) - 45)
     for idx in range(start_idx, len(asset_df)):
         current_slice = asset_df.iloc[: idx + 1]
         latest = current_slice.iloc[-1]
         prev = current_slice.iloc[-2]
 
-        # Match sliding window index (idx - 20)
         pred_idx = min(idx - 20, len(live_rul_preds) - 1)
         est_rul = max(0.0, float(live_rul_preds[pred_idx]))
 
         with kpi_placeholder.container():
             m1, m2, m3, m4, m5 = st.columns(5)
-            m1.metric(
-                "Live Cycle",
-                f"#{int(latest['cycle'])}",
-                delta="+1 cycle",
-            )
+            m1.metric("Live Cycle", f"#{int(latest['cycle'])}", delta="+1 cycle")
             m2.metric(
                 "Vibration",
                 f"{latest['vibration_mms']:.2f} mm/s",
@@ -124,31 +127,8 @@ if stream_live:
             )
 
         with chart_placeholder.container():
-            fig_live = go.Figure()
-            fig_live.add_trace(
-                go.Scatter(
-                    x=current_slice["cycle"],
-                    y=current_slice["vibration_mms"],
-                    name="Live Vibration (mm/s)",
-                    line=dict(color="#00CC96", width=2.5),
-                )
-            )
-            fig_live.add_trace(
-                go.Scatter(
-                    x=current_slice["cycle"],
-                    y=current_slice["temp_c"] / 15.0,
-                    name="Core Temp (scaled /15)",
-                    line=dict(color="#EF553B", width=2),
-                )
-            )
-            fig_live.update_layout(
-                title=f"Streaming Incoming Telemetry Packets (Cycle 1 → {int(latest['cycle'])})",
-                xaxis_title="Operating Cycle",
-                yaxis_title="Sensor Amplitude",
-                height=300,
-                margin=dict(l=20, r=20, t=40, b=20),
-            )
-            st.plotly_chart(fig_live, width="stretch", key=f"live_chart_{idx}")
+            plot_df = current_slice[["cycle", "vibration_mms", "pressure_bar"]].set_index("cycle")
+            st.line_chart(plot_df, height=260)
 
         time.sleep(stream_speed)
 else:
