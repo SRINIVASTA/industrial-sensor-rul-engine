@@ -12,9 +12,9 @@ def extract_sktime_features(df: pd.DataFrame) -> pd.DataFrame:
 
     kwargs = {
         "lag_feature": {
-            "lag":,
-            "mean": [[1, 5]],
-            "std": [[1, 5]],
+            "lag": list((1, 2)),
+            "mean": list((list((1, 5)),)),
+            "std": list((list((1, 5)),)),
         }
     }
     transformer = WindowSummarizer(**kwargs, target_cols=SENSOR_COLS)
