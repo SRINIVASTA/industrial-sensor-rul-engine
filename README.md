@@ -11,7 +11,7 @@ Built and maintained by [@SRINIVASTA](https://github.com), this repository hosts
 
 ### ⭐ Show Your Support
 
-If you like the UI design, system architecture, or biopharmaceutical digital twin engineering behind **Bio-Twin MITT Core**, please consider giving this repository a **Star ⭐** on GitHub! It helps showcase this work and motivates future builds.
+If you like the UI design, system architecture, or industrial predictive maintenance engineering behind **Industrial Sensor RUL & Drift Engine**, please consider giving this repository a **Star ⭐** on GitHub! It helps showcase this work and motivates future builds.
 
 ---
 <img src="assets/desktop.png">
