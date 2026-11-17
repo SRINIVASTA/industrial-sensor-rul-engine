@@ -61,6 +61,14 @@ if st.sidebar.button("🔄 Generate New Synthetic Fleet"):
     st.session_state.stream_log_df = None
     st.rerun()
 
+if st.sidebar.button("🧹 Clear Cache & Reset App"):
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    st.session_state.darts_active = False
+    st.session_state.rul_active = False
+    st.session_state.stream_log_df = None
+    st.rerun()
+
 st.sidebar.markdown("---")
 stream_live = st.sidebar.toggle("🔴 Enable Live Sensor Telemetry Stream", value=False)
 stream_speed = st.sidebar.slider("Stream Refresh Rate (sec)", 0.1, 1.0, 0.3)
