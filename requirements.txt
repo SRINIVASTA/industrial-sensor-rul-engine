@@ -3,7 +3,6 @@ pandas
 scikit-learn
 sktime
 darts[all]
-pytorch-lightning
-torch
+pytorch-lightning>=2.0.0torch
 streamlit
 plotly
