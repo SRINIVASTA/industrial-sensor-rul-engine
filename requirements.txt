@@ -1,6 +1,7 @@
---extra-index-url https://pytorch.org
+--index-url https://pytorch.org
+--extra-index-url https://pypi.org
 numpy
-pandas
+pandas<3.0.0
 scikit-learn
 sktime
 u8darts
