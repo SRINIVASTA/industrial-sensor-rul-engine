@@ -1,13 +1,14 @@
+import gc
 import time
 import numpy as np
 import pandas as pd
-import streamlit as st
-import torch
 import plotly.graph_objects as go
 from src.data_simulator import generate_sensor_data
-from src.preprocessing import extract_sktime_features, create_sequences
 from src.forecasting_darts import forecast_sensor_drift
+from src.preprocessing import create_sequences, extract_sktime_features
 from src.rul_pytorch import train_rul_model
+import streamlit as st
+import torch
 
 st.set_page_config(
     page_title="Industrial Sensor RUL & Drift Engine",
@@ -17,7 +18,8 @@ st.set_page_config(
 
 st.title("⚙️ Industrial Predictive Maintenance & Sensor Drift Engine")
 st.caption(
-    "Continuous Telemetry Stream & Applied ML Pipeline • PyTorch (LSTM) • Darts (N-BEATS) • sktime"
+    "Continuous Telemetry Stream & Applied ML Pipeline • PyTorch (LSTM) • Darts"
+    " (N-BEATS) • sktime"
 )
 
 if "darts_active" not in st.session_state:
@@ -30,23 +32,27 @@ if "stream_log_df" not in st.session_state:
     st.session_state.stream_log_df = None
 
 
-@st.cache_data
+@st.cache_data(max_entries=1)
 def load_telemetry_data(seed: int):
     return generate_sensor_data(n_machines=15, seed=seed)
 
 
-@st.cache_data(max_entries=3)
+@st.cache_data(max_entries=1)
 def run_cached_darts(df, machine_id: int, horizon: int = 15):
-    return forecast_sensor_drift(df, machine_id=machine_id, horizon=horizon)
+    res = forecast_sensor_drift(df, machine_id=machine_id, horizon=horizon)
+    gc.collect()
+    return res
 
 
-@st.cache_resource(max_entries=3)
+@st.cache_resource(max_entries=1)
 def get_trained_lstm(df, test_machine_id: int):
     _ = extract_sktime_features(df[df["machine_id"] <= 3])
     X_train, y_train, _ = create_sequences(
         df[df["machine_id"] != test_machine_id], seq_length=20
     )
-    return train_rul_model(X_train, y_train, epochs=20)
+    model = train_rul_model(X_train, y_train, epochs=40)
+    gc.collect()
+    return model
 
 
 # Sidebar Controls
@@ -59,6 +65,7 @@ horizon = st.sidebar.slider("Darts Forecast Horizon (Cycles)", 10, 25, 15)
 if st.sidebar.button("🔄 Generate New Synthetic Fleet"):
     st.session_state.sim_seed = int(np.random.randint(1, 10000))
     st.session_state.stream_log_df = None
+    gc.collect()
     st.rerun()
 
 if st.sidebar.button("🧹 Clear Cache & Reset App"):
@@ -67,14 +74,19 @@ if st.sidebar.button("🧹 Clear Cache & Reset App"):
     st.session_state.darts_active = False
     st.session_state.rul_active = False
     st.session_state.stream_log_df = None
+    gc.collect()
     st.rerun()
 
 st.sidebar.markdown("---")
-stream_live = st.sidebar.toggle("🔴 Enable Live Sensor Telemetry Stream", value=False)
+stream_live = st.sidebar.toggle(
+    "🔴 Enable Live Sensor Telemetry Stream", value=False
+)
 stream_speed = st.sidebar.slider("Stream Refresh Rate (sec)", 0.1, 1.0, 0.3)
 
 df = load_telemetry_data(st.session_state.sim_seed)
-asset_df = df[df["machine_id"] == machine_id].sort_values("cycle").reset_index(drop=True)
+asset_df = (
+    df[df["machine_id"] == machine_id].sort_values("cycle").reset_index(drop=True)
+)
 
 # Always-available sidebar CSV export
 st.sidebar.markdown("---")
@@ -110,7 +122,11 @@ if stream_live:
 
     # Endless loop rolling over to next turbine upon breakdown (RUL == 0)
     while True:
-        curr_df = df[df["machine_id"] == current_id].sort_values("cycle").reset_index(drop=True)
+        curr_df = (
+            df[df["machine_id"] == current_id]
+            .sort_values("cycle")
+            .reset_index(drop=True)
+        )
         X_seq, _, _ = create_sequences(curr_df, seq_length=20)
         live_model.eval()
         with torch.no_grad():
@@ -133,23 +149,27 @@ if stream_live:
             else:
                 status_label = "NORMAL"
 
-            streamed_records.append(
-                {
-                    "machine_id": int(current_id),
-                    "cycle": int(latest["cycle"]),
-                    "temp_c": latest["temp_c"],
-                    "vibration_mms": latest["vibration_mms"],
-                    "pressure_bar": latest["pressure_bar"],
-                    "rpm": latest["rpm"],
-                    "true_RUL": true_rul,
-                    "pytorch_predicted_RUL": round(est_rul, 2),
-                    "alert_status": status_label,
-                }
-            )
-            st.session_state.stream_log_df = pd.DataFrame(streamed_records)
+            streamed_records.append({
+                "machine_id": int(current_id),
+                "cycle": int(latest["cycle"]),
+                "temp_c": latest["temp_c"],
+                "vibration_mms": latest["vibration_mms"],
+                "pressure_bar": latest["pressure_bar"],
+                "rpm": latest["rpm"],
+                "true_RUL": true_rul,
+                "pytorch_predicted_RUL": round(est_rul, 2),
+                "alert_status": status_label,
+            })
+            if len(streamed_records) > 500:
+                streamed_records.pop(0)
+
+            if len(streamed_records) % 5 == 0 or true_rul == 0:
+                st.session_state.stream_log_df = pd.DataFrame(streamed_records)
 
             banner_placeholder.markdown(
-                f"**Active Streaming Asset:** `Turbine #{current_id}` (Lifespan: `{len(curr_df)} cycles`) | **Total Packets Streamed:** `{len(streamed_records)}`"
+                f"**Active Streaming Asset:** `Turbine #{current_id}`"
+                f" (Lifespan: `{len(curr_df)} cycles`) | **Buffered"
+                f" Packets:** `{len(streamed_records)}`"
             )
 
             with kpi_placeholder.container():
@@ -183,29 +203,40 @@ if stream_live:
                 )
 
             with chart_placeholder.container():
-                plot_df = current_slice[["cycle", "vibration_mms", "pressure_bar"]].set_index("cycle")
+                plot_df = current_slice[
+                    ["cycle", "vibration_mms", "pressure_bar"]
+                ].set_index("cycle")
                 st.line_chart(plot_df, height=260)
 
             time.sleep(stream_speed)
 
         current_id = (current_id % 15) + 1
+        gc.collect()
 else:
     st.info(
-        "👈 Toggle **'Enable Live Sensor Telemetry Stream'** in the left sidebar to start continuous real-time streaming. Toggle it **OFF** anytime to inspect and download the captured CSV log."
+        "👈 Toggle **'Enable Live Sensor Telemetry Stream'** in the left"
+        " sidebar to start continuous real-time streaming. Toggle it **OFF**"
+        " anytime to inspect and download the captured CSV log."
     )
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Selected Asset Lifecycle", f"{int(asset_df['cycle'].max())} cycles")
+    k1.metric(
+        "Selected Asset Lifecycle", f"{int(asset_df['cycle'].max())} cycles"
+    )
     k2.metric("Peak Vibration", f"{asset_df['vibration_mms'].max():.2f} mm/s")
     k3.metric("Peak Core Temp", f"{asset_df['temp_c'].max():.1f} °C")
     k4.metric("Final Pressure", f"{asset_df['pressure_bar'].iloc[-1]:.2f} bar")
 
 # Show captured stream log & download button whenever data exists
 if st.session_state.stream_log_df is not None:
-    with st.expander("📋 View & Download Captured Live Telemetry Log", expanded=True):
+    with st.expander(
+        "📋 View & Download Captured Live Telemetry Log", expanded=True
+    ):
         st.dataframe(st.session_state.stream_log_df.tail(15), width="stretch")
         st.download_button(
             label="📥 Download Continuous Telemetry + PyTorch RUL Log (CSV)",
-            data=st.session_state.stream_log_df.to_csv(index=False).encode("utf-8"),
+            data=st.session_state.stream_log_df.to_csv(index=False).encode(
+                "utf-8"
+            ),
             file_name="continuous_live_telemetry_rul_log.csv",
             mime="text/csv",
             type="primary",
@@ -221,7 +252,8 @@ col1, col2 = st.columns(2)
 with col1:
     st.subheader("1. Darts Sensor Drift Forecast (Vibration mm/s)")
     st.write(
-        "Compares classical **Exponential Smoothing** against deep **N-BEATS**."
+        "Compares classical **Exponential Smoothing** against deep"
+        " **N-BEATS**."
     )
     if st.button("Run Darts Forecast", type="primary"):
         st.session_state.darts_active = True
@@ -267,7 +299,8 @@ with col1:
 with col2:
     st.subheader("2. PyTorch LSTM Remaining Useful Life (RUL)")
     st.write(
-        "Extracts rolling window features via **sktime** and predicts remaining cycles using **PyTorch LSTM**."
+        "Extracts rolling window features via **sktime** and predicts remaining"
+        " cycles using **PyTorch LSTM**."
     )
     if st.button("Train & Predict RUL", type="primary"):
         st.session_state.rul_active = True
