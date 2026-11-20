@@ -14,8 +14,7 @@ Built and maintained by [@SRINIVASTA](https://github.com), this repository hosts
 If you like the UI design, system architecture, or industrial predictive maintenance engineering behind **Industrial Sensor RUL & Drift Engine**, please consider giving this repository a **Star ⭐** on GitHub! It helps showcase this work and motivates future builds.
 
 ---
-<img src="assets/desktop.png">
-
+<img src="assets/desktop.png" width="100%" alt="Desktop preview">
 
 ## Modules in this repo
 
